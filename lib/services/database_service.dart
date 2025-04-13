@@ -6,23 +6,66 @@ class DatabaseService {
 
   Future<void> saveUserData(String userId) async {
     await _firestore.collection('users').doc(userId).set({
-      'tigerStats': {
+      'petStats': {
         'hunger': 50,
         'happiness': 50,
         'energy': 50,
-        'lastUpdated': DateTime.now().toIso8601String(),
-        'currentTigerImage': 'assets/images/tiger/tiger_normal.png',
+        'lastUpdated': FieldValue.serverTimestamp(),
+        'currentPetImage': 'assets/images/tiger/tiger_normal.png',
         'currentBlinkImage': 'assets/images/tiger/tiger_normal_blink.png',
+        'coins': 100,
+        'level': 1,
+        'experience': 0,
       },
       'foodInventory': {
-        'bread': 2,
-        'candy': 3,
-        'cheese': 5,
+        'bread' : 1,
+        'candy' : 1,
+        'cheese': 1,
+        'chocolate' : 1,
+        'eggs' : 1,
+        'hotdogsandwich' : 1,
+        'icecream' : 1,
+        'meat' : 1,
+        'nuggetsfries' : 1,
+        'pizza' : 1,
+        'salad' : 1,
+        'salmon' : 1
       },
-      'coins': 100,
-      'level': 1,
-      'experience': 0
     }, SetOptions(merge: true)); // Merge prevents overwriting existing data
+  }
+
+  //Update the Database
+  Future<void> updateDatabase({
+    required String userId,
+    required int hunger,
+    required int happiness,
+    required int energy,
+    required String currentPetImage,
+    required String currentBlinkImage,
+    required int coins,
+    required int level,
+    required int experience,
+    required Map<String, int> foodInventory,
+    required DateTime lastUpdated,
+  }) async {
+    try {
+      await _firestore.collection('users').doc(userId).set({
+        'petStats': {
+          'hunger': hunger.clamp(0, 100),
+          'happiness': happiness.clamp(0, 100),
+          'energy': energy.clamp(0, 100),
+          'currentPetImage': currentPetImage,
+          'currentBlinkImage': currentBlinkImage,
+          'coins': coins,
+          'level': level,
+          'experience': experience,
+          'lastUpdated': FieldValue.serverTimestamp()
+        },
+        'foodInventory': foodInventory,
+      }, SetOptions(merge: true));
+    } catch (e) {
+      print("Error updating database: $e");
+    }
   }
 
   // 🟡 Update food inventory (e.g., when buying food)
@@ -33,11 +76,11 @@ class DatabaseService {
   }
 
   // 🟡 Update tiger stats (e.g., when feeding)
-  Future<void> updateTigerStats(String userId, int hunger, int happiness) async {
+  Future<void> updatePetStats(String userId, int hunger, int happiness) async {
     await _firestore.collection('users').doc(userId).update({
-      'tigerStats.hunger': hunger.clamp(0, 100),
-      'tigerStats.happiness': happiness.clamp(0, 100),
-      'tigerStats.lastUpdated': DateTime.now().toIso8601String(),
+      'petStats.hunger': hunger.clamp(0, 100),
+      'petStats.happiness': happiness.clamp(0, 100),
+      'petStats.lastUpdated': FieldValue.serverTimestamp(),
     });
   }
 

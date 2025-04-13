@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:async';
+import 'package:firebase_auth/firebase_auth.dart';
+import '../services/database_service.dart';
+import 'dart:math';
 
 class Home extends StatefulWidget {
   const Home({super.key});
@@ -12,6 +15,10 @@ class Home extends StatefulWidget {
 class _HomeState extends State<Home> {
   //Database
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  User? currentUser;
+  final dbService = DatabaseService();
+
 
   //Tiger Mood
   int hunger = 50;
@@ -22,9 +29,13 @@ class _HomeState extends State<Home> {
 
   bool isBlinking = false;
   bool isMoodChanging = false;
+  bool isHungerChangning = false;
+
+  //Loading Animation
+  bool _isLoading = true;
 
   //TigerBlinking Image
-  String currentTigerImage = 'assets/images/tiger/tiger_normal.png';
+  String currentPetImage = 'assets/images/tiger/tiger_normal.png';
   String currentBlinkImage = 'assets/images/tiger/tiger_normal_blink.png';
 
   //Food
@@ -39,44 +50,99 @@ class _HomeState extends State<Home> {
 
   Map<String, int> foodInventory = {};
 
+  Map<String, Map<String, int>> foodEffects = {
+    'bread': {'hunger': 5, 'happiness': 2},
+    'candy': {'hunger': 3, 'happiness': 8},
+    'cheese': {'hunger': 8, 'happiness': 4},
+    'chocolate': {'hunger': 4, 'happiness': 10},
+    'eggs': {'hunger': 10, 'happiness': 3},
+    'hotdogsandwich': {'hunger': 12, 'happiness': 5},
+    'icecream': {'hunger': 5, 'happiness': 9},
+    'meat': {'hunger': 20, 'happiness': 4},
+    'nuggetsfries': {'hunger': 15, 'happiness': 6},
+    'pizza': {'hunger': 18, 'happiness': 7},
+    'salad': {'hunger': 7, 'happiness': 2},
+    'salmon': {'hunger': 20, 'happiness': 5},
+  };
+
+  //Coins
+  int coins = 100;
+  //Level
+  int level = 1;
+  //Experience
+  int experience = 0;
+
   @override
   void initState() {
     super.initState();
+    currentUser = _auth.currentUser;
     _loadData();
     _startBlinking();
     _startMoodChanging();
+    _startHungerDecay();
   }
 
-  Future<void> _loadData() async{
-    try{
-      DocumentSnapshot snapshot = await _firestore.collection('pet_data').doc('stats').get();
-      if(snapshot.exists){
-        setState(() {
-          hunger = snapshot ["hunger"];
-          happiness = snapshot ["happiness"];
-          energy = snapshot ["energy"];
-          foodInventory = Map<String, int>.from(snapshot['foodInventory']);
-          currentTigerImage = snapshot["currentTigerImage"] ?? 'assets/images/tiger/tiger_normal.png';
-          currentBlinkImage = snapshot["currentBlinkImage"] ?? 'assets/images/tiger/tiger_normal_blink.png';
-        });
-      }
-    } catch (e){
-      print("Error loading data: $e");
-    }
-  }
-
-  Future<void> _updateDatabase() async {
+  Future<void> _loadData() async {
     try {
-      await _firestore.collection('pet_data').doc('stats').update({
-        'hunger': hunger,
-        'happiness': happiness,
-        'energy': energy,
-        'foodInventory': foodInventory,
-        'currentTigerImage': currentTigerImage,
-        'currentBlinkImage': currentBlinkImage,
-      });
+      DocumentSnapshot snapshot = await _firestore.collection('users').doc(currentUser!.uid).get();
+      if (snapshot.exists) {
+        Map<String, dynamic> data = snapshot.data() as Map<String, dynamic>;
+        Map<String, dynamic> petStats = data['petStats'];
+
+        // Get the lastUpdated time
+        Timestamp lastUpdatedTimestamp = petStats['lastUpdated'];
+        DateTime lastUpdated = lastUpdatedTimestamp.toDate();
+        DateTime now = DateTime.now();
+        Duration diff = now.difference(lastUpdated);
+
+        // Calculate decays/restores
+        int hungerDecayAmount = 5 * (diff.inHours ~/ 3);  // every 3 hours
+        int happinessDecayAmount = 5 * diff.inHours;      // every hour
+        int energyRestoreAmount = 5 * (diff.inHours ~/ 2); // every 2 hours
+
+        int newHunger = petStats['hunger'] - hungerDecayAmount;
+        int newHappiness = petStats['happiness'] - happinessDecayAmount;
+        int newEnergy = petStats['energy'] + energyRestoreAmount;
+
+        // Clamp values and update UI state
+        setState(() {
+          hunger = newHunger.clamp(0, 100);
+          happiness = newHappiness.clamp(0, 100);
+          energy = newEnergy.clamp(0, 100);
+
+          foodInventory = Map<String, int>.from(data['foodInventory']);
+          _isLoading = false;
+        });
+
+        // Set pet image based on mood
+        if (happiness > 50) {
+          currentPetImage = 'assets/images/tiger/tiger_happy.png';
+          currentBlinkImage = 'assets/images/tiger/tiger_blink.png';
+        } else if (happiness == 50) {
+          currentPetImage = 'assets/images/tiger/tiger_normal.png';
+          currentBlinkImage = 'assets/images/tiger/tiger_normal_blink.png';
+        } else {
+          currentPetImage = 'assets/images/tiger/tiger_sad.png';
+          currentBlinkImage = 'assets/images/tiger/tiger_sad_blink.png';
+        }
+
+        // Save updated values to Firestore
+        await dbService.updateDatabase(
+          userId: currentUser!.uid,
+          hunger: hunger,
+          happiness: happiness,
+          energy: energy,
+          currentPetImage: currentPetImage,
+          currentBlinkImage: currentBlinkImage,
+          coins: coins,
+          level: level,
+          experience: experience,
+          foodInventory: foodInventory,
+          lastUpdated: now,
+        );
+      }
     } catch (e) {
-      print("Error updating database: $e");
+      print("Error loading data: $e");
     }
   }
 
@@ -93,42 +159,87 @@ class _HomeState extends State<Home> {
     });
   }
 
+  //Happiness Mood Change
   void _startMoodChanging() {
-    Timer.periodic(const Duration(seconds: 5), (timer) {
+    Timer.periodic(const Duration(seconds: 3600), (timer) {
       _changeMood((happiness - 5).clamp(0, 100));
     });
   }
 
-  void _changeMood(int newHappiness) {
+  Future<void> _changeMood(int newHappiness) async {
     setState(() {
       isMoodChanging = true;
     });
 
-    Future.delayed(const Duration(milliseconds: 150), () {
+    Future.delayed(const Duration(milliseconds: 150), () async {
       setState(() {
         happiness = newHappiness;
 
         if (happiness > 50) {
-          currentTigerImage = 'assets/images/tiger/tiger_happy.png';
+          currentPetImage = 'assets/images/tiger/tiger_happy.png';
           currentBlinkImage = 'assets/images/tiger/tiger_blink.png';
         } else if (happiness == 50) {
-          currentTigerImage = 'assets/images/tiger/tiger_normal.png';
+          currentPetImage = 'assets/images/tiger/tiger_normal.png';
           currentBlinkImage = 'assets/images/tiger/tiger_normal_blink.png';
         } else {
-          currentTigerImage = 'assets/images/tiger/tiger_sad.png';
+          currentPetImage = 'assets/images/tiger/tiger_sad.png';
           currentBlinkImage = 'assets/images/tiger/tiger_sad_blink.png';
         }
       });
 
-      // Save updated mood and images to Firestore
-      _updateDatabase();
+      // Extract userId from currentUser
+      String userId = _auth.currentUser!.uid;
+
+      // Save updated stats to Firestore
+      await dbService.updateDatabase(
+        userId: userId,
+        hunger: hunger,
+        happiness: happiness,
+        energy: energy,
+        currentPetImage: currentPetImage,
+        currentBlinkImage: currentBlinkImage,
+        coins: coins,
+        level: level,
+        experience: experience,
+        foodInventory: foodInventory,
+        lastUpdated: DateTime.now(),
+      );
     });
 
+    // Reset mood change flag after delay
     Future.delayed(const Duration(milliseconds: 300), () {
       setState(() {
         isMoodChanging = false;
       });
     });
+  }
+
+  void _startHungerDecay() {
+    Timer.periodic(const Duration(seconds: 14400), (timer) {
+      _decreaseHunger((hunger - 1).clamp(0, 100)); // or decrease by any amount you want
+    });
+  }
+
+  Future<void> _decreaseHunger(int newHunger) async {
+    setState(() {
+      hunger = newHunger;
+    });
+
+    // Update Firestore
+    String userId = _auth.currentUser!.uid;
+    await dbService.updateDatabase(
+      userId: userId,
+      hunger: hunger,
+      happiness: happiness,
+      energy: energy,
+      currentPetImage: currentPetImage,
+      currentBlinkImage: currentBlinkImage,
+      coins: coins,
+      level: level,
+      experience: experience,
+      foodInventory: foodInventory,
+      lastUpdated: DateTime.now(),
+    );
   }
 
   void feedTiger(String food) {
@@ -137,15 +248,35 @@ class _HomeState extends State<Home> {
         // Reduce food count
         foodInventory[food] = (foodInventory[food]! - 1).clamp(0, 99);
 
-        // Increase Happiness
-        _changeMood((happiness + 10).clamp(0, 100));
+        // Apply food effects
+        int hungerGain = foodEffects[food]?['hunger'] ?? 10;
+        int happinessGain = foodEffects[food]?['happiness'] ?? 5;
+
+        //Increase Stats
+        hunger = (hunger + hungerGain).clamp(0, 100);
+        _changeMood((happiness + happinessGain).clamp(0, 100));
 
         // Show food animation near tiger
         droppedFoodImage = 'assets/images/foods/${food}_food.png';
       });
 
-      // Update Firestore with new values
-      _updateDatabase();
+      // Extract userId from currentUser
+      String userId = _auth.currentUser!.uid;
+
+      // Save updated stats to Firestore
+      dbService.updateDatabase(
+        userId: userId,
+        hunger: hunger,
+        happiness: happiness,
+        energy: energy,
+        currentPetImage: currentPetImage,
+        currentBlinkImage: currentBlinkImage,
+        coins: coins,
+        level: level,
+        experience: experience,
+        foodInventory: foodInventory,
+        lastUpdated: DateTime.now(),
+      );
 
       // Remove food after animation
       Future.delayed(const Duration(seconds: 1), () {
@@ -161,10 +292,53 @@ class _HomeState extends State<Home> {
     });
   }
 
+  //Experience Thresholds
+  Map<int, int> generateExperienceThresholds({int maxLevel = 99}) {
+    Map<int, int> thresholds = {};
+    for (int level = 1; level <= maxLevel; level++) {
+      thresholds[level] = (50 * (level * sqrt(level.toDouble()))).round();
+    }
+    return thresholds;
+  }
+
+  //Experience
+  void addExperience(int amount) {
+    final thresholds = generateExperienceThresholds();
+
+    setState(() {
+      experience += amount;
+
+      // Level up while experience exceeds the threshold
+      while (level < 99 && experience >= thresholds[level]!) {
+        experience -= thresholds[level]!; // carry over extra XP
+        levelUp();
+      }
+    });
+  }
+
+  // Level up method
+  void levelUp() {
+    if (level >= 99) return;
+
+    setState(() {
+      level++;
+      experience = 0;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Level Up! You're now at Level $level"))
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     String selectedFood = foodKeys[selectedFoodIndex];
-
+    final thresholds = generateExperienceThresholds();
+    if(_isLoading){
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
     return Scaffold(
       backgroundColor: Colors.green[300],
       body: SafeArea(
@@ -176,12 +350,12 @@ class _HomeState extends State<Home> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Padding(
+                   Padding(
                     padding: EdgeInsets.only(left: 10),
                     child: Row(
                       children: [
                         Icon(Icons.attach_money, color: Colors.green),
-                        Text('100', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                        Text('$coins', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                       ],
                     ),
                   ),
@@ -195,13 +369,37 @@ class _HomeState extends State<Home> {
                       buildStatBox('Energy', energy, Colors.yellow),
                     ],
                   ),
-                  const Padding(
-                    padding: EdgeInsets.only(right: 10),
-                    child: Row(
+                  Padding(
+                    padding: const EdgeInsets.only(right: 10),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        Text('Lv. 5', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
-                        SizedBox(width: 5),
-                        Icon(Icons.star, color: Colors.orange),
+                        Row(
+                          children: [
+                            Text('Lv. $level', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                            const SizedBox(width: 5),
+                            const Icon(Icons.star, color: Colors.orange),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Container(
+                          width: 60,
+                          height: 6,
+                          decoration: BoxDecoration(
+                            color: Colors.grey[300],
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                          child: FractionallySizedBox(
+                            alignment: Alignment.centerLeft,
+                            widthFactor: experience / thresholds[level]!,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: Colors.blue,
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                            ),
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -219,7 +417,7 @@ class _HomeState extends State<Home> {
                         return Stack(
                           alignment: Alignment.center,
                           children: [
-                            Image.asset(currentTigerImage, height: 200),
+                            Image.asset(currentPetImage, height: 200),
                             AnimatedOpacity(
                               opacity: isBlinking ? 1.0 : 0.0,
                               duration: const Duration(milliseconds: 150),
